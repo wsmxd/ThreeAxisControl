@@ -8,13 +8,13 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "uart_echo.h"  // 👈 修复 1：必须包含这个头文件
-#include "esp8266.h"    // 👈 修复 2：必须包含这个头文件
+#include "esp8266.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,8 +35,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-uint8_t rx1_byte;
-uint8_t rx3_byte;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -47,19 +46,7 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART1)
-    {
-        UartEcho_RxCallback(rx1_byte); 
-        HAL_UART_Receive_IT(&huart1, &rx1_byte, 1); 
-    }
-    else if (huart->Instance == USART3)
-    {
-        Esp8266_RxCallback(rx3_byte); 
-        HAL_UART_Receive_IT(&huart3, &rx3_byte, 1); 
-    }
-}
+
 /* USER CODE END 0 */
 
 /**
@@ -88,22 +75,23 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
-  UartEcho_Init(&huart1); 
-  HAL_UART_Receive_IT(&huart1, &rx1_byte, 1); 
-
-  Esp8266_Init(&huart3);
-  HAL_UART_Receive_IT(&huart3, &rx3_byte, 1);
+  Esp8266_SetDebugUart(&huart1);  /* ① 先注入调试口 */
+  HAL_Delay(2000);                /* 等 ESP 上电稳定 */
+  Esp8266_Init(&huart3);          /* ② 启动 AT 状态机 */
+  Esp8266_HwStart(&huart3);       /* ③ 开 IDLE+DMA 接收 */
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    UartEcho_Process();
-    Esp8266_Process();
+    Esp8266_Process();          /* ③ 驱动状态机节拍 */
+    // UartEcho_Process();
+    // Esp8266_Process();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

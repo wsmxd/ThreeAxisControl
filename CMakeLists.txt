@@ -57,18 +57,27 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # ==================== 修改点 3：添加你的 C++ 文件 ====================
     # 假设你把 esp8266.cpp 放在了 Core/Src 目录下，就加上这句：
     Core/Src/esp8266.cpp
-    Core/Src/uart_echo.cpp
+    Core/Src/esp8266_port.c        # ← 新增:IDLE+DMA 硬件层
     # ================================================================
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    Core/Inc
 )
 
+set(ESP_WIFI_SSID     "ChinaNet-cUup"      CACHE STRING "WiFi SSID")
+set(ESP_WIFI_PASSWORD "pmv4awfx"           CACHE STRING "WiFi Password")
+set(ESP_TCP_HOST      "192.168.1.15"       CACHE STRING "TCP Server IP")
+set(ESP_TCP_PORT      "10000"              CACHE STRING "TCP Server Port")
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+    ESP_WIFI_SSID="${ESP_WIFI_SSID}"
+    ESP_WIFI_PASSWORD="${ESP_WIFI_PASSWORD}"
+    ESP_TCP_HOST="${ESP_TCP_HOST}"
+    ESP_TCP_PORT=${ESP_TCP_PORT}       # 注意:数字不带引号
 )
 
 # Remove wrong libob.a library dependency when using cpp files
