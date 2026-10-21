@@ -58,6 +58,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # 假设你把 esp8266.cpp 放在了 Core/Src 目录下，就加上这句：
     Core/Src/esp8266.cpp
     Core/Src/esp8266_port.c        # ← 新增:IDLE+DMA 硬件层
+    Core/Src/motion.c
     # ================================================================
 )
 
