@@ -1,4 +1,5 @@
 #include "esp8266.h"
+#include "app.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -36,7 +37,7 @@ Esp8266::Esp8266(UART_HandleTypeDef* huart, const Config& cfg)
       _ipdExpected(0), _ipdRecv(0),
       _state(ST_INIT), _stateTimer(0), _retryCount(0),
       _gotIp(false), _cipRetry(0),
-      _txLen(0), _txPending(false), _txTimer(0)
+      _txLen(0), _txPending(false), _txSending(false), _txTimer(0)
 {
     memset(_rxRing,  0, sizeof(_rxRing));
     memset(_lineBuf, 0, sizeof(_lineBuf));
@@ -55,6 +56,9 @@ void Esp8266::changeState(State s) {
     _retryCount = 0;
     if (s != ST_CIPSTART) _cipRetry = 0;
     if (s != ST_CWJAP)    _gotIp    = false;
+    _txPending = false;
+    _txSending = false;
+    if (s == ST_READY)    App_OnLinkReset();
 }
 
 bool Esp8266::isReady() const {
@@ -68,7 +72,7 @@ void Esp8266::sendCmd(const char* cmd) {
 }
 
 bool Esp8266::sendData(const uint8_t* data, uint16_t len) {
-    if (_state != ST_READY || _txPending) return false;
+    if (_state != ST_READY || _txPending || _txSending) return false;
     if (!data || len == 0 || len > TX_MAX) return false;
 
     memcpy(_txBuf, data, len);
@@ -103,13 +107,18 @@ void Esp8266::process() {
     if (_rxOverflow) {
         _rxOverflow = false;
         debug("WARN", "RX overflow");
+        App_OnLinkReset();
     }
 
     uint32_t now = HAL_GetTick();
 
     if (_txPending && (now - _txTimer) > TX_TIMEOUT_MS) {
         _txPending = false;
+        _txSending = false;
         debug("WARN", "CIPSEND timeout");
+    } else if (_txSending && (now - _txTimer) > TX_SEND_TIMEOUT) {
+        _txSending = false;
+        debug("WARN", "SEND OK timeout");
     }
 
     if (_state != ST_READY && _stateTimer != 0 &&
@@ -163,6 +172,8 @@ void Esp8266::parseByte(uint8_t b) {
     if (_txPending && _rxParseState == RX_LINE && _lineLen == 0 && b == '>') {
         HAL_UART_Transmit(_huart, _txBuf, _txLen, TX_SEND_TIMEOUT);
         _txPending = false;
+        _txSending = true;
+        _txTimer = HAL_GetTick();
         return;
     }
 
@@ -225,6 +236,7 @@ void Esp8266::handleLine(const char* line) {
     if (strstr(line, "WIFI DISCONNECT")) {
         if (_state == ST_READY || _state == ST_CIPSTART) {
             debug("NET", "WiFi down, rejoin");
+            App_OnLinkReset();
             char cmd[160];
             snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"\r\n",
                      _cfg.ssid, _cfg.password);
@@ -240,6 +252,7 @@ void Esp8266::handleLine(const char* line) {
     if (strstr(line, "CLOSED")) {
         if (_state == ST_READY) {
             debug("NET", "TCP closed, reconnect");
+            App_OnLinkReset();
             char cmd[160];
             snprintf(cmd, sizeof(cmd), "AT+CIPSTART=\"TCP\",\"%s\",%u\r\n",
                      _cfg.host, (unsigned)_cfg.port);
@@ -322,8 +335,11 @@ void Esp8266::handleLine(const char* line) {
         break;
 
     case ST_READY:
-        if (strstr(line, "SEND FAIL")) {
+        if (strstr(line, "SEND OK")) {
+            _txSending = false;
+        } else if (strstr(line, "SEND FAIL")) {
             _txPending = false;
+            _txSending = false;
             debug("TX", "send failed");
         }
         break;
@@ -332,15 +348,7 @@ void Esp8266::handleLine(const char* line) {
 
 /* ============ 应用层分发(可继承覆盖) ============ */
 void Esp8266::onTcpData(const uint8_t* data, uint16_t len) {
-    if (len >= 6 && memcmp(data, "LED_ON",  6) == 0) {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET);
-        debug("CMD", "LED ON");
-    } else if (len >= 7 && memcmp(data, "LED_OFF", 7) == 0) {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_SET);
-        debug("CMD", "LED OFF");
-    } else {
-        debug("TCP", "unknown payload");
-    }
+    App_OnTcpData(data, len);
 }
 
 /* ============ 调试输出:走 s_debugUart,完全解耦 ============ */

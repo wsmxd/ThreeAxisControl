@@ -95,6 +95,7 @@ private:
     uint8_t  _txBuf[TX_MAX];
     uint16_t _txLen;
     bool     _txPending;
+    bool     _txSending;
     uint32_t _txTimer;
 
     void drainRx();

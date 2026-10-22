@@ -11,6 +11,7 @@ extern "C" {
 
 /* ============ 时基频率,必须与 TIM6 配置一致 ============ */
 #define TICK_RATE_HZ    20000u
+#define MAX_STEP_HZ     (TICK_RATE_HZ / 2u)
 
 /* ============ 引脚定义 ============ */
 /* X 轴 — 已接线 */

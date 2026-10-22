@@ -18,6 +18,7 @@
 /* USER CODE BEGIN Includes */
 #include "esp8266.h"
 #include "motion.h"
+#include "app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -88,69 +89,30 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
-  // Esp8266_SetDebugUart(&huart1);  /* ① 先注入调试口 */
-  // HAL_Delay(2000);                /* 等 ESP 上电稳定 */
-  // Esp8266_Init(&huart3);          /* ② 启动 AT 状态机 */
-  // Esp8266_HwStart(&huart3);       /* ③ 开 IDLE+DMA 接收 */
+  Motion_Init();
+  HAL_TIM_Base_Start_IT(&htim6);
 
-  /* ★ 电机初始状态 */
-    // HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_RESET);   // ENA = 低 → 使能
-    // HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8, GPIO_PIN_RESET);   // DIR = 低 → 方向 A
-    // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);   // PUL = 低
-    // HAL_Delay(500);                                          // 等 TB6600 稳定
+  App_Init();
 
-    Motion_Init();
-    HAL_TIM_Base_Start_IT(&htim6);           /* 启动 20kHz 时基 */
-    HAL_Delay(500);
+  Esp8266_SetDebugUart(&huart1);
+  HAL_Delay(2000);
+  if (!Esp8266_HwStart(&huart3)) {
+      printf("ESP8266 RX start failed\r\n");
+  }
+  Esp8266_Init(&huart3);
+
+  printf("P0 protocol ready\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    //Esp8266_Process();          /* ③ 驱动状态机节拍 */
-    // UartEcho_Process();
-    // Esp8266_Process();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-      if (!Motion_IsBusy()) {
-    /* 测试 1:走 400 步 */
-    Motion_MoveTo(400, 0, 0, 1000);
-    while (Motion_IsBusy()) { }
-    
-    // 直接用 printf 打印！(会自动通过 UART1 发出)
-    printf("Phase 1: POS=%ld\r\n", (long)Motion_GetAxis(AXIS_X)->position);
-    HAL_Delay(2000);
-
-    /* 测试 2:回原点 */
-    Motion_MoveTo(0, 0, 0, 1000);
-    while (Motion_IsBusy()) { }
-    
-    printf("Phase 2: POS=%ld\r\n", (long)Motion_GetAxis(AXIS_X)->position);
-    HAL_Delay(2000);
-}
-    /* ★ 正转 1 圈（1 细分 = 200 步） */
-        // for (int i = 0; i < 200; i++) {
-        //     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);   // 高
-        //     HAL_Delay(1);                                          // 1ms
-        //     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET); // 低
-        //     HAL_Delay(1);                                          // 1ms
-        // }
-
-        // HAL_Delay(1000);   // 停 1 秒
-
-        // /* ★ 反向 1 圈 */
-        // HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);                    // 翻转方向
-        // for (int i = 0; i < 200; i++) {
-        //     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
-        //     HAL_Delay(1);
-        //     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
-        //     HAL_Delay(1);
-        // }
-
-        // HAL_Delay(1000);
-        // HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_8);                    // 翻回方向 A
+    Esp8266_Process();
+    App_Process();
   }
   /* USER CODE END 3 */
 }

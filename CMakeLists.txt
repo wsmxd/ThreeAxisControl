@@ -59,6 +59,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/esp8266.cpp
     Core/Src/esp8266_port.c        # ← 新增:IDLE+DMA 硬件层
     Core/Src/motion.c
+    Core/Src/protocol.c
+    Core/Src/app.c
     # ================================================================
 )
 
