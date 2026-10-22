@@ -1,6 +1,7 @@
 #include "app.h"
 #include "protocol.h"
 #include "motion.h"
+#include "machine_config.h"
 #include "esp8266.h"
 #include "main.h"
 #include <stdio.h>
@@ -21,6 +22,9 @@ static uint32_t   s_tx_retry_tick;
 static uint16_t   s_last_seq;
 static ProtoState s_state;
 static bool       s_status_pending;
+static bool       s_wait_motion;
+static uint32_t   s_move_start_tick;
+static uint32_t   s_move_steps;
 
 static void app_handle_frame(uint8_t cmd, const uint8_t *payload, uint16_t len);
 
@@ -85,6 +89,27 @@ static bool app_push_status(void)
     return app_tx_push(PROTO_CMD_STATUS, payload, sizeof(payload));
 }
 
+static uint32_t app_abs_i32(int32_t value)
+{
+    return (value < 0) ? (uint32_t)(-(int64_t)value) : (uint32_t)value;
+}
+
+static uint32_t app_move_steps(int32_t x, int32_t y, int32_t z)
+{
+    const AxisState *ax = Motion_GetAxis(AXIS_X);
+    const AxisState *ay = Motion_GetAxis(AXIS_Y);
+    const AxisState *az = Motion_GetAxis(AXIS_Z);
+    if (!ax || !ay || !az) return 0u;
+
+    uint32_t sx = app_abs_i32(x - ax->position);
+    uint32_t sy = app_abs_i32(y - ay->position);
+    uint32_t sz = app_abs_i32(z - az->position);
+    uint32_t steps = sx;
+    if (sy > steps) steps = sy;
+    if (sz > steps) steps = sz;
+    return steps;
+}
+
 static void app_handle_line(const uint8_t *payload, uint16_t len)
 {
     if (len != PROTO_LINE_PAYLOAD_LEN) {
@@ -99,8 +124,6 @@ static void app_handle_line(const uint8_t *payload, uint16_t len)
     uint32_t feed = Proto_ReadU32(&payload[12]);
     uint16_t seq = Proto_ReadU16(&payload[16]);
 
-    s_last_seq = seq;
-
     printf("LINE x=%ld y=%ld z=%ld feed=%lu seq=%u\r\n",
            (long)x, (long)y, (long)z, (unsigned long)feed, (unsigned)seq);
 
@@ -109,13 +132,30 @@ static void app_handle_line(const uint8_t *payload, uint16_t len)
         return;
     }
 
-    if (feed == 0u || feed > MAX_STEP_HZ) {
+    uint32_t max_feed = MACHINE_MAX_FEED_HZ;
+    if (max_feed > MAX_STEP_HZ) max_feed = MAX_STEP_HZ;
+    if (feed == 0u || feed > max_feed) {
         app_send_ack(seq, PROTO_ACK_BAD_PARAM);
         return;
     }
 
+    if (s_wait_motion || Motion_IsBusy()) {
+        app_send_ack(seq, PROTO_ACK_BUSY);
+        return;
+    }
+
+    uint32_t move_steps = app_move_steps(x, y, z);
+
+    if (!Motion_MoveTo(x, y, z, feed)) {
+        app_send_ack(seq, PROTO_ACK_BUSY);
+        return;
+    }
+
+    s_last_seq = seq;
+    s_move_start_tick = HAL_GetTick();
+    s_move_steps = move_steps;
+    s_wait_motion = true;
     app_send_ack(seq, PROTO_ACK_OK);
-    s_status_pending = true;
 }
 
 static void app_handle_frame(uint8_t cmd, const uint8_t *payload, uint16_t len)
@@ -131,9 +171,11 @@ static void app_handle_frame(uint8_t cmd, const uint8_t *payload, uint16_t len)
             break;
         }
         Motion_Stop();
+        s_wait_motion = false;
         s_state = PROTO_STATE_IDLE;
         printf("STOP\r\n");
         app_send_ack(PROTO_SEQ_NONE, PROTO_ACK_OK);
+        s_status_pending = true;
         break;
 
     case PROTO_CMD_ESTOP:
@@ -142,6 +184,7 @@ static void app_handle_frame(uint8_t cmd, const uint8_t *payload, uint16_t len)
             break;
         }
         Motion_Stop();
+        s_wait_motion = false;
         s_state = PROTO_STATE_ESTOP;
         printf("ESTOP\r\n");
         app_send_ack(PROTO_SEQ_NONE, PROTO_ACK_OK);
@@ -175,6 +218,9 @@ void App_Init(void)
     s_last_seq = PROTO_SEQ_NONE;
     s_state = PROTO_STATE_IDLE;
     s_status_pending = false;
+    s_wait_motion = false;
+    s_move_start_tick = 0;
+    s_move_steps = 0;
 }
 
 void App_OnLinkReset(void)
@@ -187,6 +233,9 @@ void App_OnLinkReset(void)
     s_last_seq = PROTO_SEQ_NONE;
     s_state = PROTO_STATE_IDLE;
     s_status_pending = false;
+    s_wait_motion = false;
+    s_move_start_tick = 0;
+    s_move_steps = 0;
 }
 
 void App_OnTcpData(const uint8_t *data, uint16_t len)
@@ -199,6 +248,28 @@ void App_OnTcpData(const uint8_t *data, uint16_t len)
 
 void App_Process(void)
 {
+    if (s_wait_motion && !Motion_IsBusy()) {
+        uint32_t elapsed_ms = HAL_GetTick() - s_move_start_tick;
+        uint32_t rate = 0u;
+        if (elapsed_ms > 0u) {
+            rate = (uint32_t)(((uint64_t)s_move_steps * 1000u) / elapsed_ms);
+        }
+
+        const AxisState *x = Motion_GetAxis(AXIS_X);
+        const AxisState *y = Motion_GetAxis(AXIS_Y);
+        const AxisState *z = Motion_GetAxis(AXIS_Z);
+        printf("MOVE done steps=%lu time=%lums rate=%lu steps/s pos=%ld,%ld,%ld\r\n",
+               (unsigned long)s_move_steps,
+               (unsigned long)elapsed_ms,
+               (unsigned long)rate,
+               x ? (long)x->position : 0L,
+               y ? (long)y->position : 0L,
+               z ? (long)z->position : 0L);
+
+        s_wait_motion = false;
+        s_status_pending = true;
+    }
+
     if (s_status_pending) {
         if (app_push_status()) {
             s_status_pending = false;

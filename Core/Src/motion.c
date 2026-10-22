@@ -1,4 +1,5 @@
 #include "motion.h"
+#include "machine_config.h"
 #include <string.h>
 
 static AxisState        s_axes[3];
@@ -62,7 +63,9 @@ void Motion_Init(void) {
 /* ============ 绝对运动 ============ */
 bool Motion_MoveTo(int32_t x, int32_t y, int32_t z, uint32_t feed_hz) {
     if (s_busy) return false;
-    if (feed_hz == 0 || feed_hz > MAX_STEP_HZ) return false;
+    uint32_t max_feed = MACHINE_MAX_FEED_HZ;
+    if (max_feed > MAX_STEP_HZ) max_feed = MAX_STEP_HZ;
+    if (feed_hz == 0 || feed_hz > max_feed) return false;
 
     int32_t dx = x - s_axes[AXIS_X].position;
     int32_t dy = y - s_axes[AXIS_Y].position;

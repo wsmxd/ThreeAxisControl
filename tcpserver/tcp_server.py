@@ -135,6 +135,7 @@ def send_frame(sock: socket.socket, frame: bytes, label: str):
 
 
 def recv_for(sock: socket.socket, stream: FrameStream, seconds: float):
+    received = []
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         sock.settimeout(max(0.01, deadline - time.monotonic()))
@@ -145,7 +146,30 @@ def recv_for(sock: socket.socket, stream: FrameStream, seconds: float):
         if not data:
             print("  connection closed")
             break
-        print_frames(stream.feed(data))
+        frames = stream.feed(data)
+        print_frames(frames)
+        received.extend(frames)
+    return received
+
+
+def wait_for_idle(sock: socket.socket, stream: FrameStream, expect_seq: int, timeout: float):
+    print(f"  waiting for completion seq={expect_seq}")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        for cmd, payload in recv_for(sock, stream, min(0.2, max(0.01, remaining))):
+            if cmd == CMD_STATUS and len(payload) == 16:
+                state = payload[0]
+                last_seq = struct.unpack_from("<H", payload, 14)[0]
+                if state == 0 and last_seq == expect_seq:
+                    return True
+            elif cmd == CMD_ACK and len(payload) == 3:
+                seq, code = struct.unpack_from("<HB", payload, 0)
+                if seq == expect_seq and code != 0:
+                    print(f"  move rejected: {ACK_NAMES.get(code, code)}")
+                    return False
+    print("  completion timeout")
+    return False
 
 
 def reader_loop(sock: socket.socket, stream: FrameStream, stop_event: threading.Event):
@@ -164,12 +188,20 @@ def reader_loop(sock: socket.socket, stream: FrameStream, stop_event: threading.
     print("\n  connection closed")
 
 
-def run_demo(sock: socket.socket):
+def run_demo(sock: socket.socket, steps: int, feed: int):
     stream = FrameStream()
-    send_frame(sock, pack_line(800, 0, 0, 1000, 1), "LINE 800,0,0 @1000 seq=1")
-    recv_for(sock, stream, 3.0)
+    timeout = max(3.0, abs(steps) / max(feed, 1) * 2.0 + 5.0)
+
+    send_frame(sock, pack_line(steps, 0, 0, feed, 1), f"LINE {steps},0,0 @{feed} seq=1")
+    if not wait_for_idle(sock, stream, 1, timeout):
+        return
+
+    send_frame(sock, pack_line(0, 0, 0, feed, 2), f"LINE 0,0,0 @{feed} seq=2")
+    if not wait_for_idle(sock, stream, 2, timeout):
+        return
+
     send_frame(sock, pack_frame(CMD_QUERY), "QUERY")
-    recv_for(sock, stream, 2.0)
+    recv_for(sock, stream, 1.0)
 
 
 def run_interactive(sock: socket.socket):
@@ -215,6 +247,8 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=10000)
     parser.add_argument("--demo", action="store_true")
+    parser.add_argument("--steps", type=int, default=800)
+    parser.add_argument("--feed", type=int, default=1000)
     args = parser.parse_args()
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -229,7 +263,7 @@ def main():
 
     try:
         if args.demo:
-            run_demo(client)
+            run_demo(client, args.steps, args.feed)
         else:
             run_interactive(client)
     finally:
