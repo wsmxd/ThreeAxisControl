@@ -15,6 +15,7 @@ CRC:   CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF), over CMD+LEN+DATA
 """
 
 import argparse
+import math
 import socket
 import struct
 import sys
@@ -162,14 +163,14 @@ def wait_for_idle(sock: socket.socket, stream: FrameStream, expect_seq: int, tim
                 state = payload[0]
                 last_seq = struct.unpack_from("<H", payload, 14)[0]
                 if state == 0 and last_seq == expect_seq:
-                    return True
+                    return payload
             elif cmd == CMD_ACK and len(payload) == 3:
                 seq, code = struct.unpack_from("<HB", payload, 0)
                 if seq == expect_seq and code != 0:
                     print(f"  move rejected: {ACK_NAMES.get(code, code)}")
-                    return False
+                    return None
     print("  completion timeout")
-    return False
+    return None
 
 
 def reader_loop(sock: socket.socket, stream: FrameStream, stop_event: threading.Event):
@@ -193,15 +194,120 @@ def run_demo(sock: socket.socket, steps: int, feed: int):
     timeout = max(3.0, abs(steps) / max(feed, 1) * 2.0 + 5.0)
 
     send_frame(sock, pack_line(steps, 0, 0, feed, 1), f"LINE {steps},0,0 @{feed} seq=1")
-    if not wait_for_idle(sock, stream, 1, timeout):
+    if wait_for_idle(sock, stream, 1, timeout) is None:
         return
 
     send_frame(sock, pack_line(0, 0, 0, feed, 2), f"LINE 0,0,0 @{feed} seq=2")
-    if not wait_for_idle(sock, stream, 2, timeout):
+    if wait_for_idle(sock, stream, 2, timeout) is None:
         return
 
     send_frame(sock, pack_frame(CMD_QUERY), "QUERY")
     recv_for(sock, stream, 1.0)
+
+
+def build_shape(shape: str, segments: int):
+    if shape == "diagonal":
+        return [(800, 400, 0), (0, 0, 0)]
+    if shape == "square":
+        return [(800, 0, 0), (800, 800, 0), (0, 800, 0), (0, 0, 0)]
+    if shape == "circle":
+        points = []
+        for i in range(segments + 1):
+            angle = 2.0 * math.pi * i / segments
+            points.append((round(400 + 400 * math.cos(angle)),
+                           round(400 + 400 * math.sin(angle)), 0))
+        points.append((0, 0, 0))
+        return points
+    return []
+
+
+def run_shape(sock: socket.socket, shape: str, feed: int, segments: int):
+    points = build_shape(shape, segments)
+    if not points:
+        print(f"unknown shape: {shape}")
+        return
+
+    stream = FrameStream()
+    seq = 1
+    current = (0, 0, 0)
+    timeout = max(10.0, 800.0 / max(feed, 1) * 2.0 + 5.0)
+
+    for target in points:
+        x, y, z = target
+        cx, cy, cz = current
+        steps = max(abs(x - cx), abs(y - cy), abs(z - cz))
+        print(f"  SEGMENT {seq}: {current} -> {target}, steps={steps}")
+        send_frame(sock, pack_line(x, y, z, feed, seq), f"LINE {target} @{feed} seq={seq}")
+        status = wait_for_idle(sock, stream, seq, timeout)
+        if status is None:
+            return
+        pos = struct.unpack_from("<iii", status, 2)
+        if pos != target:
+            print(f"  pos mismatch: {pos} != {target}")
+            return
+        print(f"  pos OK: {pos}")
+        current = target
+        seq = (seq + 1) & 0xFFFF
+
+    print(f"  shape {shape} complete")
+
+
+def run_shape_stream(sock: socket.socket, shape: str, feed: int, segments: int):
+    points = build_shape(shape, segments)
+    if not points:
+        print(f"unknown shape: {shape}")
+        return
+
+    stream = FrameStream()
+    targets = {i + 1: target for i, target in enumerate(points)}
+
+    current = (0, 0, 0)
+    total_steps = 0
+    for target in points:
+        total_steps += max(abs(target[i] - current[i]) for i in range(3))
+        current = target
+    timeout = max(15.0, total_steps / max(feed, 1) * 2.0 + 10.0)
+
+    for seq, target in targets.items():
+        send_frame(sock, pack_line(*target, feed, seq), f"LINE {target} @{feed} seq={seq}")
+
+    print(f"  waiting for {len(targets)} completions")
+    done = {}
+    acks = 0
+    final_state = None
+    deadline = time.monotonic() + timeout
+
+    while len(done) < len(targets) and time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        for cmd, payload in recv_for(sock, stream, min(0.2, max(0.01, remaining))):
+            if cmd == CMD_ACK and len(payload) == 3:
+                seq, code = struct.unpack_from("<HB", payload, 0)
+                if code != 0:
+                    print(f"  move rejected seq={seq}: {ACK_NAMES.get(code, code)}")
+                    return
+                acks += 1
+            elif cmd == CMD_STATUS and len(payload) == 16:
+                state = payload[0]
+                seq = struct.unpack_from("<H", payload, 14)[0]
+                pos = struct.unpack_from("<iii", payload, 2)
+                if seq in targets:
+                    if pos != targets[seq]:
+                        print(f"  pos mismatch seq={seq}: {pos} != {targets[seq]}")
+                        return
+                    if seq not in done:
+                        done[seq] = pos
+                        print(f"  pos OK: {pos}")
+                    if seq == len(targets):
+                        final_state = state
+
+    if len(done) < len(targets):
+        print(f"  stream timeout: {len(done)}/{len(targets)} completed")
+        return
+    if final_state != 0:
+        print(f"  final state is not IDLE: {final_state}")
+        return
+
+    print(f"  stream complete: {len(done)} segments, {acks} ACKs")
 
 
 def run_interactive(sock: socket.socket):
@@ -247,9 +353,16 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=10000)
     parser.add_argument("--demo", action="store_true")
+    parser.add_argument("--shape", choices=["diagonal", "square", "circle"])
+    parser.add_argument("--stream", action="store_true")
+    parser.add_argument("--segments", type=int, default=12)
     parser.add_argument("--steps", type=int, default=800)
     parser.add_argument("--feed", type=int, default=1000)
     args = parser.parse_args()
+
+    if args.stream and not args.shape:
+        print("--stream requires --shape")
+        return 2
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -262,7 +375,12 @@ def main():
     print(f"connected: {addr}")
 
     try:
-        if args.demo:
+        if args.shape:
+            if args.stream:
+                run_shape_stream(client, args.shape, args.feed, args.segments)
+            else:
+                run_shape(client, args.shape, args.feed, args.segments)
+        elif args.demo:
             run_demo(client, args.steps, args.feed)
         else:
             run_interactive(client)

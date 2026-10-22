@@ -2,7 +2,7 @@
 #include "usart.h"          /* 只用到 huart3 */
 
 #ifndef ESP_DMA_BUF_SIZE
-#define ESP_DMA_BUF_SIZE 512
+#define ESP_DMA_BUF_SIZE 1024
 #endif
 
 static uint8_t            s_dmaBuf[ESP_DMA_BUF_SIZE];

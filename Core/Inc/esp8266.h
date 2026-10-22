@@ -48,9 +48,9 @@ protected:
 
 private:
     enum : uint16_t {
-        RING_SIZE = 1024,
+        RING_SIZE = 4096,
         LINE_MAX  = 256,
-        IPD_MAX   = 512,
+        IPD_MAX   = 2048,
         TX_MAX    = 256,
         MAX_RETRY = 5
     };

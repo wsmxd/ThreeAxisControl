@@ -9,12 +9,14 @@
 extern "C" {
 #endif
 
-/* ============ 时基频率,必须与 TIM6 配置一致 ============ */
+/* TIM6 tick rate, must match tim.c */
 #define TICK_RATE_HZ    20000u
 #define MAX_STEP_HZ     (TICK_RATE_HZ / 2u)
 
-/* ============ 引脚定义 ============ */
-/* X 轴 — 已接线 */
+#define MOTION_QUEUE_SIZE       32u
+#define MOTION_DONE_QUEUE_SIZE  64u
+
+/* X axis, connected */
 #define X_PUL_PORT      GPIOA
 #define X_PUL_PIN       GPIO_PIN_8
 #define X_DIR_PORT      GPIOC
@@ -22,7 +24,7 @@ extern "C" {
 #define X_ENA_PORT      GPIOC
 #define X_ENA_PIN       GPIO_PIN_6
 
-/* Y / Z — 硬件到货后改这里 */
+/* Y / Z, update when hardware is connected */
 #define Y_PUL_PORT      GPIOB
 #define Y_PUL_PIN       GPIO_PIN_0
 #define Y_DIR_PORT      GPIOB
@@ -32,7 +34,7 @@ extern "C" {
 #define Z_DIR_PORT      GPIOB
 #define Z_DIR_PIN       GPIO_PIN_3
 
-/* 影子轴开关:1=Y/Z 不真实输出(调试阶段);硬件到货后改 0 */
+/* 1 = Y/Z are logical shadow axes, 0 = real output */
 #define Y_Z_SHADOW      1
 
 typedef enum { AXIS_X = 0, AXIS_Y = 1, AXIS_Z = 2 } AxisId;
@@ -46,12 +48,23 @@ typedef struct {
     bool    active;
 } AxisState;
 
-void  Motion_Init(void);
-bool  Motion_MoveTo(int32_t x, int32_t y, int32_t z, uint32_t feed_hz);
-bool  Motion_IsBusy(void);
-void  Motion_Stop(void);
+typedef struct {
+    uint16_t seq;
+    uint8_t  more;
+    uint32_t steps;
+    uint32_t elapsed_ms;
+    uint32_t feed_hz;
+    int32_t  position[3];
+} MotionDone;
+
+void     Motion_Init(void);
+bool     Motion_Enqueue(int32_t x, int32_t y, int32_t z, uint32_t feed_hz, uint16_t seq);
+uint8_t  Motion_QueueFree(void);
+bool     Motion_PopDone(MotionDone *out);
+bool     Motion_IsBusy(void);
+void     Motion_Stop(void);
 const AxisState* Motion_GetAxis(AxisId id);
-void  Motion_TickHandler(void);     /* TIM6 中断里调用 */
+void     Motion_TickHandler(void);
 
 #ifdef __cplusplus
 }
